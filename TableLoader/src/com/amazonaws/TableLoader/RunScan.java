@@ -55,8 +55,9 @@ public class RunScan implements Runnable {
 
 		synchronized (Main.sync) {
 			// put these results in the result map
-			Main.results.put(Integer.valueOf(shard), items);
+			Main.results.put(shard, items);
 			Main.numThreads.decrementAndGet();
+			Main.count += items.size();
 		}
 	}
 }

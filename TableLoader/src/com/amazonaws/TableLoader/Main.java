@@ -1,6 +1,7 @@
 package com.amazonaws.TableLoader;
 
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -15,6 +16,11 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.json.JSONObject;
+//import org.springframework.http.HttpMethod;
+//import org.springframework.http.MediaType;
+//import org.springframework.web.reactive.function.BodyInserters;
+//import org.springframework.web.reactive.function.client.WebClient;
+//import org.springframework.web.reactive.function.client.WebClient.RequestBodyUriSpec;
 
 import com.amazonaws.ClientConfiguration;
 import com.amazonaws.auth.profile.ProfileCredentialsProvider;
@@ -39,15 +45,16 @@ public class Main {
 	public static volatile AtomicInteger numThreads = new AtomicInteger(0);
 	public static volatile Object sync = new Object();
 	public static volatile Map<Integer, List<Item>> results = new HashMap<Integer, List<Item>>();
+	public static Map<String, List<Item>> sItems = new HashMap<String, List<Item>>();
 	public static ThreadPoolExecutor tpe = (ThreadPoolExecutor) Executors.newFixedThreadPool(60);
+	public static int count = 0;
 
 	private static long elapsed, WCU = 0L, RCU = 0L;
 	private static Map<String, Integer> counts = new HashMap<String, Integer>();
-	private static int count = 0;
 	private static TableWriteItems twi;
 	private static String table = "", data = "", demo = "index-lag", leadingKey = "Item";
 	private static List<String> keys = new ArrayList<String>();
-	private static boolean createTable = false, optimizeKeys = false;
+	private static boolean createTable = false, optimizeKeys = false, shootout = false, loadItems = true;
 	private static Random random = new Random();
 	private static Calendar cal = Calendar.getInstance();
 	private static SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
@@ -62,12 +69,38 @@ public class Main {
 
 		// set globals
 		parseArgs(args);
+		shootout = demo.equals("shootout");
 
 		// create the table and index if -c was passed
-		if (createTable)
-			createTable();
-		else
-			clearTable();
+		if (createTable) {
+			createTable(table);
+
+			if (shootout) {
+				createTable("Customers");
+				createTable("Orders");
+				createTable("OrderItems");
+				createTable("Products");
+				createTable("Invoices");
+				createTable("Warehouses");
+				createTable("Shipments");
+				createTable("ShipmentItems");
+			}
+		} else {
+			if (loadItems) {
+				clearTable(table);
+
+				if (shootout) {
+					clearTable("Customers");
+					clearTable("Orders");
+					clearTable("OrderItems");
+					clearTable("Invoices");
+					clearTable("Shipments");
+					clearTable("ShipmentItems");
+					clearTable("Warehouses");
+					clearTable("Products");
+				}
+			}
+		}
 
 		// set the list of keys to use if -o was passed
 		if (optimizeKeys)
@@ -83,20 +116,57 @@ public class Main {
 			scanTable(tpe.getMaximumPoolSize(), true);
 			break;
 
+		case "shootout":
 		case "online-shop":
-			Map<String, String> params = new HashMap<String, String>();
-			params.put("address",
-					"{\"Country\":{\"S\":\"Sweden\"},\"County\":{\"S\":\"Vastra Gotaland\"},\"City\":{\"S\":\"Goteborg\"},\"Street\":{\"S\":\"MainStreet\"},\"Number\":{\"S\":\"20\"},\"ZipCode\":{\"S\":\"41111\"}}");
-			loadItems("warehouse", 1, params);
-			params.put("address",
-					"{\"Country\":{\"S\":\"Sweden\"},\"County\":{\"S\":\"Vastra Gotaland\"},\"City\":{\"S\":\"Boras\"},\"Street\":{\"S\":\"RiverStreet\"},\"Number\":{\"S\":\"20\"},\"ZipCode\":{\"S\":\"11111\"}}");
-			loadItems("warehouse", 1, params);
+			if (loadItems) {
+				Map<String, String> params = new HashMap<String, String>();
+				params.put("address",
+						"{\"Country\":{\"S\":\"Sweden\"},\"County\":{\"S\":\"Vastra Gotaland\"},\"City\":{\"S\":\"Goteborg\"},\"Street\":{\"S\":\"MainStreet\"},\"Number\":{\"S\":\"20\"},\"ZipCode\":{\"S\":\"41111\"}}");
+				loadItems("warehouse", 1, params);
+				params.put("address",
+						"{\"Country\":{\"S\":\"Sweden\"},\"County\":{\"S\":\"Vastra Gotaland\"},\"City\":{\"S\":\"Boras\"},\"Street\":{\"S\":\"RiverStreet\"},\"Number\":{\"S\":\"20\"},\"ZipCode\":{\"S\":\"11111\"}}");
+				loadItems("warehouse", 1, params);
 
-			params.clear();
-			loadItems("product", 50, params);
-			params.clear();
-			loadItems("customer", 100, params);
-			drainQueue();
+				params.clear();
+				loadItems("product", counts.get("products"), params);
+				params.clear();
+				loadItems("customer", counts.get("customers"), params);
+				drainQueue();
+			}
+
+			if (demo.equals("shootout")) {
+				System.out.print("Retrieving ID's for all Orders...");
+				scanTable("Orders");
+				System.out.println(String.format("\nRetrieved %d Order ID's.", count));
+
+				System.out.println("Prewarming thread pool...");
+				tpe.prestartAllCoreThreads();
+				getAllOrdersById(false);
+
+				for (int i = 0; i < 100; i++) {
+					System.out.println(String.format("\nIteration %d:", i));
+					elapsed = System.currentTimeMillis();
+					count = 0;
+					System.out.print("Running getOrderById test for Multiple Table data model...");
+					getAllOrdersById(false);
+
+					long multiTable = System.currentTimeMillis() - elapsed;
+					System.out.println(String.format("\nRetrieved %d order objects with average latency of %dms,",
+							count, multiTable / count));
+
+					sItems = new HashMap<String, List<Item>>();
+					elapsed = System.currentTimeMillis();
+					count = 0;
+					System.out.print("\nRunning getOrderById test for Single Table data model...");
+					getAllOrdersById(true);
+
+					long singleTable = System.currentTimeMillis() - elapsed;
+					System.out.println(String.format("\nRetrieved %d order objects with average latency of %dms,",
+							count, singleTable / count));
+					System.out.println(String.format("Single table efficiency: %d%s", (singleTable * 100) / (multiTable), "%"));
+				}
+			}
+
 			break;
 		}
 
@@ -107,20 +177,47 @@ public class Main {
 		System.out.println("Done.\n");
 	}
 
-	// blow away all the items from a previous run
-	private static void clearTable() {
-		System.out.print("Clearing items from table...");
-		elapsed = System.currentTimeMillis();
+	private static void getAllOrdersById(boolean singleTable) {
+		for (List<Item> items : results.values()) {
+			for (Item item : items) {
+				if (singleTable) {
+					numThreads.incrementAndGet();
+					tpe.execute(new RunQuery(table, item.getString("PK")));
+				} else {
+					numThreads.incrementAndGet();
+					tpe.execute(new RunQuery("Orders", item.getString("PK")));
+					numThreads.incrementAndGet();
+					tpe.execute(new RunQuery("OrderItems", item.getString("PK")));
+					numThreads.incrementAndGet();
+					tpe.execute(new RunQuery("Invoices", item.getString("PK")));
+					numThreads.incrementAndGet();
+					tpe.execute(new RunQuery("Shipments", item.getString("PK")));
+					numThreads.incrementAndGet();
+					tpe.execute(new RunQuery("ShipmentItems", item.getString("PK")));
+				}
+			}
+			count += items.size();
+		}
+		waitForWorkers("");
+	}
 
-		// scan the table
+	private static void scanTable(String name) {
 		for (int i = 0; i < tpe.getMaximumPoolSize(); i++) {
-			tpe.execute(new RunScan(i, tpe.getMaximumPoolSize(), table, false));
+			tpe.execute(new RunScan(i, tpe.getMaximumPoolSize(), name, false));
 		}
 
-		waitForWorkers();
+		waitForWorkers(".");
+	}
+
+	// blow away all the items from a previous run
+	private static void clearTable(String name) {
+		System.out.print(String.format("Clearing items from table [%s]...", name));
+		elapsed = System.currentTimeMillis();
+
+		scanTable(name);
 
 		// delete all the items returned from scan
-		twi = new TableWriteItems(table);
+		twi = new TableWriteItems(name);
 		count = 0;
 		for (Integer key : results.keySet()) {
 			List<Item> resultItems = results.get(key);
@@ -131,7 +228,7 @@ public class Main {
 		}
 
 		removeItem(null);
-		waitForWorkers();
+		waitForWorkers(".");
 
 		System.out.println(String.format("\nDeleted %d items in %dms.", count, System.currentTimeMillis() - elapsed));
 		results.clear();
@@ -144,18 +241,18 @@ public class Main {
 			// check if we need to send a batch write
 			if (twi.getPrimaryKeysToDelete().size() == 25) {
 				tpe.execute(new BatchLoad(twi));
-				twi = new TableWriteItems(table);
+				twi = new TableWriteItems(twi.getTableName());
 			}
 		} else if (twi.getPrimaryKeysToDelete() != null) {
 			tpe.execute(new BatchLoad(twi));
-			twi = new TableWriteItems(table);
+			twi = new TableWriteItems(twi.getTableName());
 		}
 	}
 
 	private static int loadItems(String type, int qty, Map<String, String> params) {
 		int ret = 0, count = 0;
-		// create some customer items
 		elapsed = System.currentTimeMillis();
+
 		if (demo.equals("index-lag"))
 			System.out.print(String.format("Loading %s items...", type));
 
@@ -187,16 +284,17 @@ public class Main {
 				queueItem(new Item().withString("PK", pk).withString("SK", pk).withString("type", "customer")
 						.withString("email", String.format("%s@somewhere.com", getString(10))));
 
-				
-				loadItems("order", random.nextInt((counts.get("orders") == null ? counts.get("orders") : 5)), params);
+				loadItems("order", random.nextInt((counts.get("orders") != null ? counts.get("orders") : 5)), params);
 				break;
 
 			case "order":
 				pk = String.format("O#%d", counts.put("items", counts.get("items") + 1));
 				params.put("orderId", pk);
-				
-				params.put("amount", Integer.toString(loadItems("item",
-						random.nextInt((counts.get("items") == null ? counts.get("items") : 3)) + 1, params)));
+
+				params.put("amount",
+						Integer.toString(loadItems("orderItem",
+								random.nextInt((counts.get("orderitems") != null ? counts.get("orderitems") : 3)) + 1,
+								params)));
 
 				cal.add(Calendar.DAY_OF_YEAR, random.nextInt(30) * -1);
 				queueItem(new Item().withString("PK", pk).withString("SK", params.get("customerId"))
@@ -222,25 +320,26 @@ public class Main {
 						.withNumber("amount", Integer.valueOf(params.get("amount")))
 						.withString("date", sdf.format(cal.getTime()));
 
-				if (random.nextBoolean()) {
-					JSONObject payment = new JSONObject(String.format(
-							"{\"Payments\":{\"L\":[{\"M\":{\"Type\":{\"S\":\"MasterCard\"},\"Amount\":{\"N\":\"%s\"},\"Data\":{\"S\":\"Payment data here...\"}}}]}}",
-							params.get("amount")));
-
-					item.withMap("detail", payment.toMap());
-				}
+//				if (random.nextBoolean()) {
+//					JSONObject payment = new JSONObject(String.format(
+//							"{\"Payments\":[{\"Type\": \"MasterCard\",\"Amount\":%s,\"Data\":\"Payment data here...\"}]}",
+//							params.get("amount")));
+//
+//					item.withMap("detail", payment.toMap());
+//				}
 
 				queueItem(item);
 				break;
 
-			case "item":
+			case "orderItem":
 				Item pItem = results.get(0).get(random.nextInt(results.get(0).size()));
 				pk = params.get("orderId");
 				sk = String.format("%s#%d", pItem.getString("PK"), count);
 
 				try {
-					item = new Item().withString("PK", pk).withString("SK", sk).withString("GSI1PK", pItem.getString("PK"))
-							.withString("type", "orderItem").withString("GSI1SK", sdf.format(cal.getTime()))
+					item = new Item().withString("PK", pk).withString("SK", sk)
+							.withString("GSI1PK", pItem.getString("PK")).withString("type", "orderItem")
+							.withString("GSI1SK", sdf.format(cal.getTime()))
 							.withString("GSI2PK", params.get("customerId"))
 							.withString("GSI2SK", sdf.format(cal.getTime())).withNumber("qty", random.nextInt(5))
 							.withNumber("price", pItem.getNumber("price"));
@@ -263,17 +362,16 @@ public class Main {
 
 				params.put("shipmentId", sk);
 				JSONObject shipTo = new JSONObject(
-						"{\"Country\":{\"S\":\"Sweden\"},\"County\":{\"S\":\"Vastra Gotaland\"},\"City\":{\"S\":\"Goteborg\"},\"Street\":{\"S\":\"Slanbarsvagen\"},\"Number\":{\"S\":\"34\"},\"ZipCode\":{\"S\":\"41787\"}}");
+						"{\"Country\": \"Sweden\",\"County\":  \"Vastra Gotaland\",\"City\":  \"Goteborg\",\"Street\":  \"Slanbarsvagen\",\"Number\":  \"34\",\"ZipCode\": \"41787\"}");
 
 				item = new Item().withString("PK", pk).withString("SK", sk).withString("type", "shipment")
 						.withString("GSI1PK", sk).withString("GSI1SK", sk)
 						.withString("GSI2PK", keys.get(random.nextInt(keys.size())))
-						.withString("GSI2SK", sdf.format(cal.getTime())).withMap("address", shipTo.toMap())
+						.withString("GSI2SK", sdf.format(cal.getTime())) // .withMap("address", shipTo.toMap())
 						.withString("method", (random.nextBoolean() ? "Express" : "Standard"));
 
 				queueItem(item);
 
-				
 				loadItems("shipItem", results.get(1).size(), params);
 				break;
 
@@ -282,7 +380,8 @@ public class Main {
 				pk = params.get("orderId");
 				sk = String.format("SI#%d", counts.put("items", counts.get("items") + 1));
 				item = new Item().withString("PK", pk).withString("SK", sk).withString("type", "shipItem")
-						.withString("GSI1PK", params.get("shipmentId")).withString("GSI1SK", orderItem.getString("GSI1PK"))
+						.withString("GSI1PK", params.get("shipmentId"))
+						.withString("GSI1SK", orderItem.getString("GSI1PK"))
 						.withNumber("qty", orderItem.getNumber("qty"));
 
 				queueItem(item);
@@ -316,26 +415,92 @@ public class Main {
 				break;
 			}
 		}
-		// run the last batchWrite
-		saveItem(null);
-		waitForWorkers();
 
-		// log elapsed time and wait on console input
-		if (!demo.equals("online-shop"))
-			System.out.println(String.format("\nLoaded %d items in %dms.", qty, System.currentTimeMillis() - elapsed));
+		if (demo.equals("index-lag")) {
+			// run the last batchWrite
+			saveItem(null);
+			waitForWorkers(".");
+
+			// log elapsed time and wait on console input
+			if (!demo.equals("online-shop"))
+				System.out.println(
+						String.format("\nLoaded %d items in %dms.", qty, System.currentTimeMillis() - elapsed));
+		}
 		return ret;
 	}
 
 	private static void drainQueue() {
 		elapsed = System.currentTimeMillis();
 		System.out.print("Loading items...");
-		for (Item item : results.get(2))
+
+		twi = new TableWriteItems("data");
+		for (Item item : results.get(2)) {
 			saveItem(item);
 
-		saveItem(null);
-		waitForWorkers();
+			if (shootout) {
+				String type = item.getString("type");
+				if (!sItems.containsKey(type))
+					sItems.put(type, new ArrayList<Item>());
+				sItems.get(type).add(item);
+			}
+		}
 
-		System.out.println(String.format("\nLoaded %d items in %dms.", results.get(2).size(), System.currentTimeMillis() - elapsed));
+		saveItem(null);
+		waitForWorkers(".");
+
+		System.out.println(String.format("\nLoaded %d items in %dms.", results.get(2).size(),
+				System.currentTimeMillis() - elapsed));
+
+		if (shootout) {
+			System.out.print("Loading multi-table items...");
+			elapsed = System.currentTimeMillis();
+
+			for (String key : sItems.keySet()) {
+				switch (key) {
+				case "customer":
+					twi = new TableWriteItems("Customers");
+					break;
+
+				case "warehouse":
+					twi = new TableWriteItems("Warehouses");
+					break;
+
+				case "warehouseItem":
+					twi = new TableWriteItems("Products");
+					break;
+
+				case "order":
+					twi = new TableWriteItems("Orders");
+					break;
+
+				case "invoice":
+					twi = new TableWriteItems("Invoices");
+					break;
+
+				case "orderItem":
+					twi = new TableWriteItems("OrderItems");
+					break;
+
+				case "shipment":
+					twi = new TableWriteItems("Shipments");
+					break;
+
+				case "shipItem":
+					twi = new TableWriteItems("ShipmentItems");
+					break;
+				}
+
+				for (Item item : sItems.get(key))
+					saveItem(item);
+				saveItem(null);
+			}
+
+			waitForWorkers(".");
+
+			System.out.println(String.format("\nLoaded %d items in %dms.", results.get(2).size(),
+					System.currentTimeMillis() - elapsed));
+		}
+
 		results.put(2, null);
 	}
 
@@ -364,19 +529,19 @@ public class Main {
 			// if the container has 25 items run the batchWrite on a new thread
 			if (twi.getItemsToPut().size() == 25) {
 				tpe.execute(new BatchLoad(twi));
-				twi = new TableWriteItems(table);
+				twi = new TableWriteItems(twi.getTableName());
 			}
 		} else if (twi.getItemsToPut() != null) {
 			tpe.execute(new BatchLoad(twi));
-			twi = new TableWriteItems(table);
+			twi = new TableWriteItems(twi.getTableName());
 		}
 	}
 
-	private static void waitForWorkers() {
+	private static void waitForWorkers(String printChar) {
 		// sleep until all updates are done
 		while (numThreads.get() > 0)
 			try {
-				System.out.print(".");
+				System.out.print(printChar);
 				Thread.sleep(100);
 			} catch (InterruptedException e) {
 				System.err.println(e.getMessage());
@@ -399,7 +564,7 @@ public class Main {
 				tpe.execute(new RunScan(i, numSegments, table, indexScan));
 			}
 
-			waitForWorkers();
+			waitForWorkers(".");
 			count = 0;
 			for (Integer key : results.keySet())
 				count += results.get(key).size();
@@ -437,7 +602,7 @@ public class Main {
 
 		// initialize the results container and the table
 		results.clear();
-		clearTable();
+		clearTable(table);
 	}
 
 	private static void init() {
@@ -480,6 +645,7 @@ public class Main {
 				break;
 
 			case "-i":
+				counts.put("orderItems", Integer.valueOf(argVals.get(key)));
 				counts.put("items", Integer.valueOf(argVals.get(key)));
 				break;
 
@@ -518,6 +684,10 @@ public class Main {
 				demo = argVals.get(key);
 				break;
 
+			case "-l":
+				loadItems = false;
+				break;
+
 			default:
 				usage(String.format("ERROR: Unknown argument [%s].", key));
 				break;
@@ -537,9 +707,7 @@ public class Main {
 		case "online-shop":
 			if (table.equals("") || (createTable && (WCU == 0 || RCU == 0)))
 				usage(String.format("Missing required option [%s]",
-						(counts.get("customers") == null ? "-n"
-								: (counts.get("partitions") == null ? "-p"
-										: (table.equals("") ? "-t" : (WCU == 0 ? "-w" : "-r"))))));
+						(table.equals("") ? "-t" : (WCU == 0 ? "-w" : "-r"))));
 
 			if (counts.get("products") == null)
 				counts.put("products", 50);
@@ -566,19 +734,20 @@ public class Main {
 		System.out.println("-s  <number>\t\tSize of items in bytes");
 		System.out.println("-o  \t\t\tOptimize partition keys");
 
-		System.out.println("\nFor 'online-shop' demo:");
-		System.out.println("-n  \t\t\tNumber of customers");
-		System.out.println("-m  \t\t\tMaximum number of orders per customer");
+		System.out.println("\nFor 'online-shop' or 'shootout' demo:");
+		System.out.println("-n  <number>\t\tNumber of customers");
+		System.out.println("-m  <number>\t\tMaximum number of orders per customer");
 		System.out.println("-i  <number>\t\tMaximum number of items per order");
 		System.out.println("-p  <number>\t\tNumber of products");
+		System.out.println("-l  \t\t\tSkip table loading");
 		System.exit(1);
 	}
 
-	private static void createTable() {
+	private static void createTable(String name) {
 		try {
 			elapsed = System.currentTimeMillis();
-			System.out.println(String.format("Creating table '%s' at %d/%d RCU/WCU...", table, RCU, WCU));
-			db.createTable(table,
+			System.out.println(String.format("Creating table '%s' at %d/%d RCU/WCU...", name, RCU, WCU));
+			db.createTable(name,
 					Arrays.asList(new KeySchemaElement("PK", KeyType.HASH), new KeySchemaElement("SK", KeyType.RANGE)),
 					Arrays.asList(new AttributeDefinition("PK", ScalarAttributeType.S),
 							new AttributeDefinition("SK", ScalarAttributeType.S)),
@@ -588,13 +757,17 @@ public class Main {
 
 			switch (demo) {
 			case "index-lag":
-				createIndex("GSI1");
+				createIndex(name, "GSI1");
 				break;
 
 			case "online-shop":
-				createIndex("GSI1");
+				createIndex(name, "GSI1");
 				Thread.sleep(2000);
-				createIndex("GSI2");
+				createIndex(name, "GSI2");
+				break;
+
+			case "shootout":
+
 				break;
 			}
 		} catch (InterruptedException ex) {
@@ -603,17 +776,22 @@ public class Main {
 		}
 	}
 
-	private static void createIndex(String name) {
+	private static void createIndex(String root, String name) {
 		try {
 			ArrayList<AttributeDefinition> attrDefs = new ArrayList<AttributeDefinition>();
-			attrDefs.add(new AttributeDefinition().withAttributeName(String.format("%sPK",name)).withAttributeType("S"));
-			attrDefs.add(new AttributeDefinition().withAttributeName(String.format("%sSK",name)).withAttributeType("S"));
+			attrDefs.add(
+					new AttributeDefinition().withAttributeName(String.format("%sPK", name)).withAttributeType("S"));
+			attrDefs.add(
+					new AttributeDefinition().withAttributeName(String.format("%sSK", name)).withAttributeType("S"));
 
 			GlobalSecondaryIndexUpdate update = new GlobalSecondaryIndexUpdate()
 					.withCreate(new CreateGlobalSecondaryIndexAction().withIndexName(name)
 							.withProvisionedThroughput(new ProvisionedThroughput(RCU, WCU))
-							.withKeySchema(new KeySchemaElement().withAttributeName(String.format("%sPK",name)).withKeyType(KeyType.HASH),
-									new KeySchemaElement().withAttributeName(String.format("%sSK",name)).withKeyType(KeyType.RANGE))
+							.withKeySchema(
+									new KeySchemaElement().withAttributeName(String.format("%sPK", name))
+											.withKeyType(KeyType.HASH),
+									new KeySchemaElement().withAttributeName(String.format("%sSK", name))
+											.withKeyType(KeyType.RANGE))
 							.withProjection(new Projection().withProjectionType("ALL")));
 
 			UpdateTableSpec uts = new UpdateTableSpec().withAttributeDefinitions(attrDefs)
@@ -622,8 +800,8 @@ public class Main {
 			elapsed = System.currentTimeMillis();
 			System.out.println(String.format("Creating %s at %d/%d RCU/WCU...", name, RCU, WCU));
 
-			db.getTable(table).updateTable(uts);
-			db.getTable(table).getIndex(name).waitForActive();
+			db.getTable(root).updateTable(uts);
+			db.getTable(root).getIndex(name).waitForActive();
 
 			System.out.println(String.format("Index created in %dms", System.currentTimeMillis() - elapsed));
 		} catch (InterruptedException ex) {
