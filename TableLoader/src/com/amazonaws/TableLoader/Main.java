@@ -135,38 +135,45 @@ public class Main {
 			}
 
 			if (demo.equals("shootout")) {
+				// Scan Orders table to get all orderId's
 				System.out.print("Retrieving ID's for all Orders...");
 				scanTable("Orders");
 				System.out.println(String.format("\nRetrieved %d Order ID's.", count));
 
+				// Prewarm thread pool
 				System.out.println("Prewarming thread pool...");
 				tpe.prestartAllCoreThreads();
 				getAllOrdersById(false);
 
+				// Start the test
 				for (int i = 0; i < 100; i++) {
 					System.out.println(String.format("\nIteration %d:", i));
-					elapsed = System.currentTimeMillis();
+					
+					// Run Multi-table and record execution time
 					count = 0;
 					System.out.print("Running getOrderById test for Multiple Table data model...");
+					elapsed = System.currentTimeMillis();
 					getAllOrdersById(false);
 
 					long multiTable = System.currentTimeMillis() - elapsed;
 					System.out.println(String.format("\nRetrieved %d order objects with average latency of %dms,",
 							count, multiTable / count));
 
+					// Reset, run Single table and record time
 					sItems = new HashMap<String, List<Item>>();
-					elapsed = System.currentTimeMillis();
 					count = 0;
 					System.out.print("\nRunning getOrderById test for Single Table data model...");
+					elapsed = System.currentTimeMillis();
 					getAllOrdersById(true);
 
 					long singleTable = System.currentTimeMillis() - elapsed;
 					System.out.println(String.format("\nRetrieved %d order objects with average latency of %dms,",
 							count, singleTable / count));
+					
+					// Report Single table efficiency as a percentage of Multi-table response time
 					System.out.println(String.format("Single table efficiency: %d%s", (singleTable * 100) / (multiTable), "%"));
 				}
 			}
-
 			break;
 		}
 
@@ -181,9 +188,11 @@ public class Main {
 		for (List<Item> items : results.values()) {
 			for (Item item : items) {
 				if (singleTable) {
+					// Get all items from same table
 					numThreads.incrementAndGet();
 					tpe.execute(new RunQuery(table, item.getString("PK")));
 				} else {
+					// Get items from entity specific tables
 					numThreads.incrementAndGet();
 					tpe.execute(new RunQuery("Orders", item.getString("PK")));
 					numThreads.incrementAndGet();
@@ -198,6 +207,8 @@ public class Main {
 			}
 			count += items.size();
 		}
+		
+		// Wait until workers are done
 		waitForWorkers("");
 	}
 
